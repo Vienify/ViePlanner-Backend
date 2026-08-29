@@ -147,6 +147,7 @@ export async function initDb() {
     "Outsource",
     "Sản phẩm Vienify",
     "Tuyển dụng",
+    "Ngày lễ đặc biệt",
   ];
   for (let i = 0; i < DEFAULT_CATEGORIES.length; i++) {
     await pool.query(
