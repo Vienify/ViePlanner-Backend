@@ -59,6 +59,13 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
+app.set("trust proxy", 1);
+
+function authCookieOptions(req, maxAge) {
+  const secure = req.protocol === "https";
+  return { httpOnly: true, sameSite: secure ? "none" : "lax", secure, maxAge };
+}
+
 app.use(cors({ origin: FRONTEND_URL, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
@@ -117,11 +124,7 @@ app.get("/auth/zoho", (req, res) => {
       .status(500)
       .send("Chưa cấu hình ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET trong backend/.env");
   const state = crypto.randomBytes(16).toString("hex");
-  res.cookie("zoho_oauth_state", state, {
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: 10 * 60 * 1000,
-  });
+  res.cookie("zoho_oauth_state", state, authCookieOptions(req, 10 * 60 * 1000));
   const params = new URLSearchParams({
     response_type: "code",
     client_id: ZOHO_CLIENT_ID,
@@ -196,11 +199,7 @@ app.get("/auth/zoho/callback", async (req, res) => {
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("token", token, authCookieOptions(req, 7 * 24 * 60 * 60 * 1000));
     res.redirect(FRONTEND_URL);
   } catch (e) {
     console.error("Zoho callback error:", e);

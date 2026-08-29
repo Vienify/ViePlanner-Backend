@@ -11,9 +11,6 @@ const {
   DB_SSL_CA = "",
 } = process.env;
 
-// Aiven (và hầu hết MySQL cloud) yêu cầu kết nối qua TLS (ssl-mode=REQUIRED).
-// Đặt DB_SSL=true để bật; nếu có DB_SSL_CA (nội dung file CA .pem) thì xác thực chứng chỉ,
-// nếu không thì chỉ mã hoá đường truyền mà không xác thực CA (khớp với ssl-mode=REQUIRED của Aiven).
 const sslOptions =
   DB_SSL === "true"
     ? DB_SSL_CA
