@@ -1,0 +1,14 @@
+# dependencies
+/node_modules
+
+# env files (secrets — never commit)
+.env
+.env.*
+
+# uploaded user content
+/uploads/*
+!/uploads/.gitkeep
+
+# misc
+.DS_Store
+npm-debug.log*
