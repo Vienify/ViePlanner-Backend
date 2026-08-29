@@ -7,7 +7,19 @@ const {
   DB_USER = "root",
   DB_PASSWORD = "0123456789",
   DB_NAME = "vie_content_planner",
+  DB_SSL = "false",
+  DB_SSL_CA = "",
 } = process.env;
+
+// Aiven (và hầu hết MySQL cloud) yêu cầu kết nối qua TLS (ssl-mode=REQUIRED).
+// Đặt DB_SSL=true để bật; nếu có DB_SSL_CA (nội dung file CA .pem) thì xác thực chứng chỉ,
+// nếu không thì chỉ mã hoá đường truyền mà không xác thực CA (khớp với ssl-mode=REQUIRED của Aiven).
+const sslOptions =
+  DB_SSL === "true"
+    ? DB_SSL_CA
+      ? { ca: DB_SSL_CA, rejectUnauthorized: true }
+      : { rejectUnauthorized: false }
+    : undefined;
 
 export async function initDb() {
   const conn = await mysql.createConnection({
@@ -15,6 +27,7 @@ export async function initDb() {
     port: Number(DB_PORT),
     user: DB_USER,
     password: DB_PASSWORD,
+    ssl: sslOptions,
   });
   await conn.query(
     `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
@@ -27,6 +40,7 @@ export async function initDb() {
     user: DB_USER,
     password: DB_PASSWORD,
     database: DB_NAME,
+    ssl: sslOptions,
     waitForConnections: true,
     connectionLimit: 10,
     charset: "utf8mb4",
