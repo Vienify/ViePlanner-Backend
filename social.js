@@ -33,10 +33,15 @@ export async function getSocialAccounts() {
       try {
         const info = await graphFetch(
           `${GRAPH_BASE}/${FB_PAGE_ID}`,
-          { fields: "name,link", access_token: FB_PAGE_ACCESS_TOKEN },
+          { fields: "name,link,picture.type(large){url}", access_token: FB_PAGE_ACCESS_TOKEN },
           "GET"
         );
-        return { configured: true, name: info.name, url: info.link || `https://facebook.com/${FB_PAGE_ID}` };
+        return {
+          configured: true,
+          name: info.name,
+          url: info.link || `https://facebook.com/${FB_PAGE_ID}`,
+          avatar: info.picture?.data?.url || null,
+        };
       } catch (e) {
         return { configured: true, error: e.message };
       }
@@ -46,10 +51,15 @@ export async function getSocialAccounts() {
       try {
         const info = await graphFetch(
           `${GRAPH_BASE}/${IG_BUSINESS_ACCOUNT_ID}`,
-          { fields: "username,name", access_token: IG_ACCESS_TOKEN },
+          { fields: "username,name,profile_picture_url", access_token: IG_ACCESS_TOKEN },
           "GET"
         );
-        return { configured: true, name: info.username || info.name, url: `https://instagram.com/${info.username}` };
+        return {
+          configured: true,
+          name: info.username || info.name,
+          url: `https://instagram.com/${info.username}`,
+          avatar: info.profile_picture_url || null,
+        };
       } catch (e) {
         return { configured: true, error: e.message };
       }
@@ -59,13 +69,14 @@ export async function getSocialAccounts() {
       try {
         const info = await graphFetch(
           `${THREADS_BASE}/me`,
-          { fields: "username", access_token: THREADS_ACCESS_TOKEN },
+          { fields: "username,threads_profile_picture_url", access_token: THREADS_ACCESS_TOKEN },
           "GET"
         );
         return {
           configured: true,
           name: info.username,
           url: `https://www.threads.com/@${info.username}`,
+          avatar: info.threads_profile_picture_url || null,
           tokenExpiresAt: THREADS_TOKEN_EXPIRES_AT || null,
         };
       } catch (e) {
