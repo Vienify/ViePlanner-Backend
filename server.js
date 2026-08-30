@@ -199,8 +199,10 @@ app.get("/auth/zoho/callback", async (req, res) => {
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-    res.cookie("token", token, authCookieOptions(req, 7 * 24 * 60 * 60 * 1000));
-    res.redirect(FRONTEND_URL);
+    // Frontend/backend khác domain nhau => KHÔNG dùng cookie (bị trình duyệt chặn
+    // cookie cross-site trên nhiều máy/trình duyệt). Gửi token qua query string,
+    // frontend sẽ lưu vào localStorage rồi xoá khỏi URL.
+    res.redirect(`${FRONTEND_URL}/?token=${encodeURIComponent(token)}`);
   } catch (e) {
     console.error("Zoho callback error:", e);
     res.redirect(`${FRONTEND_URL}/login?error=server_error`);
@@ -208,12 +210,12 @@ app.get("/auth/zoho/callback", async (req, res) => {
 });
 
 app.post("/auth/logout", (_req, res) => {
-  res.clearCookie("token");
   res.json({ ok: true });
 });
 
 function requireAuth(req, res, next) {
-  const token = req.cookies.token;
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Chưa đăng nhập" });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
