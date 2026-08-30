@@ -129,6 +129,8 @@ function splitThreadsContent(text, limit) {
 }
 
 function publicUrl(filePath) {
+  // Ảnh/video lưu trên Cloudflare R2 đã là link công khai sẵn — dùng thẳng, không cần ghép PUBLIC_BASE_URL.
+  if (/^https?:\/\//i.test(filePath)) return filePath;
   if (!PUBLIC_BASE_URL) {
     throw new Error(
       "Thiếu PUBLIC_BASE_URL trong backend/.env — Instagram/Threads yêu cầu URL ảnh/video công khai truy cập được từ Internet (deploy server có domain, hoặc dùng ngrok khi test)."
@@ -151,10 +153,21 @@ async function graphFetch(url, params, method = "POST") {
   return json;
 }
 
-async function uploadFbBinary(endpoint, filePath, fields) {
+// Đọc nội dung file asset: từ URL công khai (R2) nếu có, hoặc từ ổ đĩa cục bộ (file cũ trước khi chuyển sang R2).
+async function readAssetBuffer(filePath) {
+  if (/^https?:\/\//i.test(filePath)) {
+    const res = await fetch(filePath);
+    if (!res.ok) throw new Error(`Không tải được file: ${filePath}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
   const abs = path.join(UPLOAD_DIR, path.basename(filePath));
+  return fs.readFileSync(abs);
+}
+
+async function uploadFbBinary(endpoint, filePath, fields) {
+  const buffer = await readAssetBuffer(filePath);
   const fd = new FormData();
-  fd.append("source", new Blob([fs.readFileSync(abs)]), path.basename(abs));
+  fd.append("source", new Blob([buffer]), path.basename(filePath));
   for (const [k, v] of Object.entries(fields)) fd.append(k, String(v));
   fd.append("access_token", FB_PAGE_ACCESS_TOKEN);
   const res = await fetch(`${GRAPH_BASE}/${FB_PAGE_ID}/${endpoint}`, { method: "POST", body: fd });

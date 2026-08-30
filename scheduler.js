@@ -1,4 +1,5 @@
 import { fbConfigured, igConfigured, publishToFacebook, publishToInstagram } from "./social.js";
+import { notify, formatDateVNShort } from "./notify.js";
 
 const CHECK_INTERVAL_MS = 60 * 1000;
 
@@ -47,6 +48,13 @@ async function checkAndPublishPlatform(pool, platform) {
         idea.id,
       ]);
       console.log(`Đã tự động đăng ${platform.name} cho ý tưởng #${idea.id} (giờ đặt: ${idea[platform.timeCol]})`);
+      await notify(
+        pool,
+        "idea_publish",
+        `đã tự động đăng lên ${platform.name}: ${idea.category || "Chưa phân loại"} · ${formatDateVNShort(idea.post_date)} lúc ${idea[platform.timeCol]}`,
+        idea.id,
+        "Hệ thống"
+      );
     } catch (e) {
       console.error(`Tự động đăng ${platform.name} thất bại cho ý tưởng #${idea.id}:`, e.message);
     }

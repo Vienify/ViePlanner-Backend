@@ -19,21 +19,15 @@ import {
   publishToThreads,
 } from "./social.js";
 import { startScheduler } from "./scheduler.js";
+import { notify as notifyDb, formatDateVNShort } from "./notify.js";
+import { uploadToR2, deleteFromR2, keyFromPublicUrl } from "./r2.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const name = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-    cb(null, name);
-  },
-});
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ok = /^(image\/(png|jpe?g|gif|webp|avif)|video\/(mp4|webm|quicktime))$/.test(
@@ -118,6 +112,10 @@ async function lookupLocation(ip) {
   }
 }
 
+async function notify(type, message, ideaId = null, actorName = null) {
+  return notifyDb(pool, type, message, ideaId, actorName);
+}
+
 app.get("/auth/zoho", (req, res) => {
   if (!zohoConfigured())
     return res
@@ -136,7 +134,6 @@ app.get("/auth/zoho", (req, res) => {
   res.redirect(`${ZOHO_ACCOUNTS_URL}/oauth/v2/auth?${params}`);
 });
 
-// Bước 2: Zoho gọi lại với code → đổi token → lấy thông tin user → tạo phiên
 app.get("/auth/zoho/callback", async (req, res) => {
   try {
     const { code, state, error } = req.query;
@@ -194,14 +191,13 @@ app.get("/auth/zoho/callback", async (req, res) => {
     );
     const [[user]] = await pool.query(`SELECT id, email, display_name FROM users WHERE zoho_id = ?`, [zohoId]);
 
+    await notify("login", `vừa đăng nhập`, null, user.display_name || user.email);
+
     const token = jwt.sign(
       { uid: user.id, email: user.email, name: user.display_name },
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-    // Frontend/backend khác domain nhau => KHÔNG dùng cookie (bị trình duyệt chặn
-    // cookie cross-site trên nhiều máy/trình duyệt). Gửi token qua query string,
-    // frontend sẽ lưu vào localStorage rồi xoá khỏi URL.
     res.redirect(`${FRONTEND_URL}/?token=${encodeURIComponent(token)}`);
   } catch (e) {
     console.error("Zoho callback error:", e);
@@ -305,6 +301,17 @@ app.get("/api/categories", async (_req, res) => {
   }
 });
 
+app.get("/api/notifications", async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, type, message, idea_id, actor_name, created_at FROM notifications ORDER BY id DESC LIMIT 100`
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/ideas", async (req, res) => {
   try {
     const { month } = req.query;
@@ -342,6 +349,12 @@ app.post("/api/ideas", async (req, res) => {
     const [result] = await pool.query(`INSERT INTO ideas SET ?`, [data]);
     const [rows] = await pool.query(`SELECT * FROM ideas WHERE id = ?`, [result.insertId]);
     const [idea] = await attachAssets(rows.map(formatIdea));
+    await notify(
+      "idea_create",
+      `đã tạo ý tưởng mới: ${idea.category || "Chưa phân loại"} · ${formatDateVNShort(idea.post_date)}`,
+      idea.id,
+      req.user.name
+    );
     res.status(201).json(idea);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -353,25 +366,53 @@ app.put("/api/ideas/:id", async (req, res) => {
     const data = normalizeIdea(req.body);
     if (Object.keys(data).length === 0)
       return res.status(400).json({ error: "Không có dữ liệu cập nhật" });
+    const isMarkReady = Object.keys(data).length === 1 && data.status === "scheduled";
+    const isSilent = req.query.silent === "1";
     await pool.query(`UPDATE ideas SET ? WHERE id = ?`, [data, req.params.id]);
     const [rows] = await pool.query(`SELECT * FROM ideas WHERE id = ?`, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: "Không tìm thấy" });
     const [idea] = await attachAssets(rows.map(formatIdea));
+    const label = `${idea.category || "Chưa phân loại"} · ${formatDateVNShort(idea.post_date)}`;
+    if (isMarkReady) {
+      await notify("idea_ready", `đã đánh dấu sẵn sàng đăng: ${label}`, idea.id, req.user.name);
+    } else if (!isSilent) {
+      await notify("idea_update", `đã sửa ý tưởng: ${label}`, idea.id, req.user.name);
+    }
     res.json(idea);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Xóa 1 asset khỏi R2 (nếu là link R2) hoặc ổ đĩa cục bộ (file cũ từ trước khi chuyển sang R2).
+async function deleteAssetFile(filePath) {
+  const key = keyFromPublicUrl(filePath);
+  if (key) {
+    await deleteFromR2(key);
+    return;
+  }
+  const p = path.join(UPLOAD_DIR, path.basename(filePath));
+  fs.promises.unlink(p).catch(() => {});
+}
+
 app.delete("/api/ideas/:id", async (req, res) => {
   try {
+    const [ideaRows] = await pool.query(`SELECT * FROM ideas WHERE id = ?`, [req.params.id]);
     const [assets] = await pool.query(`SELECT file_path FROM assets WHERE idea_id = ?`, [
       req.params.id,
     ]);
     await pool.query(`DELETE FROM ideas WHERE id = ?`, [req.params.id]);
     for (const a of assets) {
-      const p = path.join(UPLOAD_DIR, path.basename(a.file_path));
-      fs.promises.unlink(p).catch(() => {});
+      deleteAssetFile(a.file_path);
+    }
+    if (ideaRows.length > 0) {
+      const idea = formatIdea(ideaRows[0]);
+      await notify(
+        "idea_delete",
+        `đã xoá ý tưởng: ${idea.category || "Chưa phân loại"} · ${formatDateVNShort(idea.post_date)}`,
+        null,
+        req.user.name
+      );
     }
     res.json({ ok: true });
   } catch (e) {
@@ -388,7 +429,9 @@ app.post("/api/ideas/:id/assets", upload.array("files", 10), async (req, res) =>
       kind === "demo" ? "general" : req.body.platform === "ig_threads" ? "ig_threads" : "fb";
     const inserted = [];
     for (const f of req.files || []) {
-      const filePath = `/uploads/${f.filename}`;
+      const ext = path.extname(f.originalname).toLowerCase();
+      const key = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${ext}`;
+      const filePath = await uploadToR2(f.buffer, key, f.mimetype);
       const [r] = await pool.query(
         `INSERT INTO assets (idea_id, file_path, original_name, kind, platform) VALUES (?, ?, ?, ?, ?)`,
         [req.params.id, filePath, f.originalname, kind, platform]
@@ -413,8 +456,7 @@ app.delete("/api/assets/:id", async (req, res) => {
     const [rows] = await pool.query(`SELECT file_path FROM assets WHERE id = ?`, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: "Không tìm thấy" });
     await pool.query(`DELETE FROM assets WHERE id = ?`, [req.params.id]);
-    const p = path.join(UPLOAD_DIR, path.basename(rows[0].file_path));
-    fs.promises.unlink(p).catch(() => {});
+    await deleteAssetFile(rows[0].file_path);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -440,9 +482,9 @@ app.get("/api/social/accounts", async (_req, res) => {
 });
 
 const PUBLISHERS = {
-  facebook: { fn: publishToFacebook, col: "fb_post_id" },
-  instagram: { fn: publishToInstagram, col: "ig_post_id" },
-  threads: { fn: publishToThreads, col: "threads_post_id" },
+  facebook: { fn: publishToFacebook, col: "fb_post_id", label: "Facebook" },
+  instagram: { fn: publishToInstagram, col: "ig_post_id", label: "Instagram" },
+  threads: { fn: publishToThreads, col: "threads_post_id", label: "Threads" },
 };
 
 app.post("/api/ideas/:id/publish/:platform", async (req, res) => {
@@ -461,6 +503,12 @@ app.post("/api/ideas/:id/publish/:platform", async (req, res) => {
     ]);
     const [updatedRows] = await pool.query(`SELECT * FROM ideas WHERE id = ?`, [req.params.id]);
     const [updated] = await attachAssets(updatedRows.map(formatIdea));
+    await notify(
+      "idea_publish",
+      `đã đăng lên ${publisher.label}: ${idea.category || "Chưa phân loại"} · ${formatDateVNShort(idea.post_date)}`,
+      idea.id,
+      req.user.name
+    );
     res.json(updated);
   } catch (e) {
     res.status(500).json({ error: e.message });

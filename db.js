@@ -78,7 +78,6 @@ export async function initDb() {
     }
   }
 
-  // Migrate dữ liệu cũ (in_progress/done) sang trạng thái mới (scheduled/posted) nếu có
   const [statusCol] = await pool.query(`SHOW COLUMNS FROM ideas LIKE 'status'`);
   if (statusCol.length > 0 && /in_progress|done/.test(statusCol[0].Type)) {
     await pool.query(
@@ -154,6 +153,29 @@ export async function initDb() {
       `INSERT IGNORE INTO categories (name, sort_order) VALUES (?, ?)`,
       [DEFAULT_CATEGORIES[i], i]
     );
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      type ENUM('login','idea_create','idea_update','idea_ready','idea_delete','idea_publish') NOT NULL,
+      message VARCHAR(500) NOT NULL,
+      idea_id INT NULL,
+      actor_name VARCHAR(255) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  const [notifTypeCol] = await pool.query(`SHOW COLUMNS FROM notifications LIKE 'type'`);
+  if (notifTypeCol.length > 0 && !/idea_publish/.test(notifTypeCol[0].Type)) {
+    await pool.query(
+      `ALTER TABLE notifications MODIFY type ENUM('login','idea_create','idea_update','idea_ready','idea_delete','idea_publish') NOT NULL`
+    );
+  }
+
+  const [actorNameCol] = await pool.query(`SHOW COLUMNS FROM notifications LIKE 'actor_name'`);
+  if (actorNameCol.length === 0) {
+    await pool.query(`ALTER TABLE notifications ADD COLUMN actor_name VARCHAR(255) NULL`);
   }
 
   return pool;
